@@ -37,13 +37,14 @@ module.exports = class ReportsHelper {
     static entity(entityId = "", userId, userToken, userName, reportType, programId = "", getPdf,appVersion) {
         return new Promise(async (resolve, reject) => {
             try {
-
                 let query = { };
+                
                 if (entityId) {
-                    query["entityId"] = ObjectId(entityId);
+                    query["entityId"] = entityId;
                 } else {
                     query["userId"] = userId
                 }
+
 
                 let dateRange = await _getDateRangeofReport(reportType);
                 let endOf = dateRange.endOf;
@@ -64,14 +65,14 @@ module.exports = class ReportsHelper {
                     { "syncedAt": { $gte: new Date(startFrom), $lte: new Date(endOf) } },
                     { "tasks": { $elemMatch: { isDeleted: { $ne: true },syncedAt: { $gte: new Date(startFrom), $lte: new Date(endOf) } } } },
                 ]
-
+                
                 const projectDetails = await projectQueries.projectDocument(
                     query,
-                    ["programId","programInformation.name", "entityInformation.name", "taskReport", "status", "tasks", "categories"],
+                    ["programId","programInformation.name", "entityInformation.name", "taskReport", "status", "tasks", "categories", "endDate"],
                     []
                 );
 
-
+                
                 let tasksReport = {
                     "total": 0,
                     "overdue": 0
@@ -101,9 +102,7 @@ module.exports = class ReportsHelper {
                 });
 
 
-
-
-                if (!projectDetails.length > 0) {
+                if ( !projectDetails.length > 0 ) {
 
                   
                     if (getPdf == true) {
@@ -167,8 +166,8 @@ module.exports = class ReportsHelper {
                 }
                
                 await Promise.all(projectDetails.map(async function (project) {
-
-                    if (project.categories) {
+                    
+                    if ( project.categories ) {
                         project.categories.map(category => {
 
                             if( 
@@ -189,61 +188,64 @@ module.exports = class ReportsHelper {
                         categories['total'] = categories['total'] + project.categories.length;
                     }
 
-                    let todayDate = moment(project.endDate, "DD.MM.YYYY");
-                    let endDate = moment().format();
-
-                    if (project.status == CONSTANTS.common.SUBMITTED_STATUS) {
+                    //Add data into projectReport and check project overdue.
+                    if ( project.status == CONSTANTS.common.SUBMITTED_STATUS ) {
 
                         projectReport[CONSTANTS.common.SUBMITTED_STATUS] = projectReport[CONSTANTS.common.SUBMITTED_STATUS] + 1;
 
-                    } else if (project.status == CONSTANTS.common.INPROGRESS_STATUS) {
-
-                        if (todayDate.diff(endDate, 'days') < 1) {
+                    } else if ( project.status == CONSTANTS.common.INPROGRESS_STATUS || project.status == CONSTANTS.common.STARTED ) {
+                        //Returns project overdue status true/false.
+                        let overdue = _getOverdueStatus( project.endDate );
+            
+                        if ( overdue ) {
                             projectReport['overdue'] = projectReport['overdue'] + 1;
                         } else {
-                            projectReport[CONSTANTS.common.INPROGRESS_STATUS] = projectReport[CONSTANTS.common.INPROGRESS_STATUS] + 1;
-                        }
-
-                    } else if (project.status == CONSTANTS.common.STARTED) {
-
-                        if (todayDate.diff(endDate, 'days') < 1) {
-                            projectReport['overdue'] = projectReport['overdue'] + 1;
-                        } else {
-                            projectReport[CONSTANTS.common.STARTED] = projectReport[CONSTANTS.common.STARTED] + 1;
+                            projectReport[project.status] = projectReport[project.status] + 1;
                         }
                     }
+                    //get total project count
                     projectReport["total"] = projectReport[CONSTANTS.common.STARTED] + 
                     projectReport['overdue'] + projectReport[CONSTANTS.common.INPROGRESS_STATUS] +
                     projectReport[CONSTANTS.common.SUBMITTED_STATUS];
 
-                    if (project.taskReport) {
-                        let keys = Object.keys(project.taskReport);
-                        keys.map(key => {
-                            if (tasksReport[key]) {
+                    //Get tasks summary deatail of project.
+                    if ( project.taskReport ) {
+                        let keys = Object.keys( project.taskReport );
+                        keys.map( key => {
+                            if ( tasksReport[key] ) {
                                 tasksReport[key] = tasksReport[key] + project.taskReport[key];
                             } else {
-                                tasksReport[key] = project.taskReport[key];
+                                tasksReport[key] = project.taskReport[key];   
                             }
                         });
                     }
 
+                    //Get number of tasks overdued.
                     await Promise.all(project.tasks.map(task => {
-                        let taskCurrentDate = moment(task.endDate, "DD.MM.YYYY");
-                        if (taskCurrentDate.diff(endDate, 'days') < 1) {
-                            if (tasksReport['overdue']) {
-                                tasksReport['overdue'] = tasksReport['overdue'] + 1;
-                            } else {
-                                tasksReport['overdue'] = 1;
-                            }
-                            if(tasksReport[task.status]){
-                                tasksReport[task.status] = tasksReport[task.status] - 1;
-                            }
-                        }
-                    }));
+                        //consider task only if not deleted
+                        if ( task.isDeleted == false && task.status != CONSTANTS.common.COMPLETED_STATUS ){
 
+                            //Returns true or false
+                            let overdue = _getOverdueStatus( task.endDate );
+                            
+                            if ( overdue ) {
+                                
+                                if ( tasksReport['overdue'] ) {
+                                    tasksReport['overdue'] = tasksReport['overdue'] + 1;
+                                } else {
+                                    tasksReport['overdue'] = 1;
+                                }
+                                if ( tasksReport[task.status] ) {
+                                    tasksReport[task.status] = tasksReport[task.status] - 1;
+                                }
+
+                            }    
+                        }
+                        
+                    }));
                 }));
 
-                if (UTILS.revertStatusorNot(appVersion)) {
+                if ( UTILS.revertStatusorNot(appVersion) ) {
 
                     projectReport[CONSTANTS.common.COMPLETED_STATUS] = projectReport[CONSTANTS.common.SUBMITTED_STATUS];
                     projectReport[CONSTANTS.common.NOT_STARTED_STATUS] = projectReport[CONSTANTS.common.STARTED];
@@ -251,7 +253,7 @@ module.exports = class ReportsHelper {
                     delete projectReport[CONSTANTS.common.STARTED];
                 }
 
-                if (getPdf == true) {
+                if ( getPdf == true ) {
                    
                     let reportTaskData = {};
                     Object.keys(tasksReport).map(taskData => {
@@ -285,7 +287,7 @@ module.exports = class ReportsHelper {
                         pdfRequest['entityName'] = projectDetails[0].entityInformation.name;
                     }
                    
-
+                    //send data to report service to generate PDF.
                     let response = await reportService.entityReport(userToken, pdfRequest);
                     if (response && response.success == true) {
                         return resolve({
@@ -319,6 +321,7 @@ module.exports = class ReportsHelper {
                 }
             } catch (error) {
                 return resolve({
+                   
                     success: false,
                     message: error.message,
                     data: false
@@ -352,17 +355,17 @@ module.exports = class ReportsHelper {
                         $exists : true
                     }
                 };
-
-                if(entityId != "" && UTILS.isValidMongoId(entityId)) {
-                    query.entityId = ObjectId(entityId);
+               
+                if( entityId != "" ) {
+                    query.entityId = entityId;
                 } 
-                
+              
                 if (userRole != "") {
+                    let regex = userRole.split(",");
+                    regex.push("")
                     query.userRole = {
-                        $in : [
-                            "",
-                            ...userRole.split(",")
-                        ]
+                        $regex:regex.join("|"), 
+                        $options:  "i"
                     }
                 }
 
@@ -484,11 +487,12 @@ module.exports = class ReportsHelper {
                 };
 
                 if (entityId) {
-                    query["entityId"] = ObjectId(entityId);
+                    query["entityId"] = entityId;
                 } else {
                     query["userId"] = userId
                 }
 
+               
                 let chartObject = [];
                 let dateRange = await _getDateRangeofReport(reportType);
                 let endOf = dateRange.endOf;
@@ -683,5 +687,24 @@ function _getDateRangeofReport(reportType) {
 
 }
 
+/**
+  * Get overdue status
+  * @method
+  * @name _getOverdueStatus
+  * @param {String} endDate - date that task or project suppose to be finished.
+  * @returns {Boolean} - returns overdue status
+ */
 
+function _getOverdueStatus( endDate ) {
+    let overdue = false;
+    let today = moment().format();
+    let endDateObject = moment( endDate, 'YYYY-MM-DD' );
+
+    //Find difference between present date and end date
+    if ( endDateObject.diff( today, 'days' ) < 1 ) {
+        overdue = true;
+    }
+
+    return overdue;
+}
 

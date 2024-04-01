@@ -198,7 +198,7 @@ module.exports = class LibraryCategoriesHelper {
                         message : CONSTANTS.apiResponses.PROJECT_NOT_FOUND,
                     };
                 }
-
+                
                 projectsData[0].showProgramAndEntity = false;
 
                 if( projectsData[0].tasks && projectsData[0].tasks.length > 0 ) {
@@ -211,7 +211,7 @@ module.exports = class LibraryCategoriesHelper {
                         isDeleted : false
                     });
 
-                    if( tasks &&  tasks.length > 0 ) {
+                    if( tasks && tasks.length > 0 ) {
 
                         let taskData = {};
 
@@ -259,7 +259,7 @@ module.exports = class LibraryCategoriesHelper {
                     data : projectsData[0]
                 });
 
-            } catch (error) {   
+            } catch (error) {
                 return resolve({
                     status : error.status ? error.status : HTTP_STATUS_CODE['internal_server_error'].status,
                     success: false,

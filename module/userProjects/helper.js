@@ -21,13 +21,140 @@ const projectTemplateTaskQueries = require(DB_QUERY_BASE_PATH + "/projectTemplat
 const kafkaProducersHelper = require(GENERICS_FILES_PATH + "/kafka/producers");
 const removeFieldsFromRequest = ["submissionDetails"];
 const programsQueries = require(DB_QUERY_BASE_PATH + "/programs");
-
+const userProfileService = require(GENERICS_FILES_PATH + "/services/users");
+const solutionsHelper = require(MODULES_BASE_PATH + "/solutions/helper");
+const certificateTemplateQueries = require(DB_QUERY_BASE_PATH + "/certificateTemplates");
+const certificateService = require(GENERICS_FILES_PATH + "/services/certificate");
+const certificateValidationsHelper = require(MODULES_BASE_PATH + "/certificateValidations/helper");
+const _ = require("lodash");  
+const programUsersQueries = require(DB_QUERY_BASE_PATH + "/programUsers");
+const telemetryEventOnOff = process.env.TELEMETRY_ON_OFF
+const entitieHelper = require(MODULES_BASE_PATH + "/entities/helper")
 /**
     * UserProjectsHelper
     * @class
 */
 
 module.exports = class UserProjectsHelper {
+
+
+     /**
+   * deleteUserPIIData function to delete users Data.
+   * @method
+   * @name deleteUserPIIData
+   * @param {userDeleteEvent} - userDeleteEvent message object 
+   * {
+      "eid": "BE_JOB_REQUEST",
+      "ets": 1619527882745,
+      "mid": "LP.1619527882745.32dc378a-430f-49f6-83b5-bd73b767ad36",
+      "actor": {
+        "id": "delete-user",
+        "type": "System"
+      },
+      "context": {
+        "channel": "01309282781705830427",
+        "pdata": {
+          "id": "org.sunbird.platform",
+          "ver": "1.0"
+        },
+        "env": "dev"
+      },
+      "object": {
+        "id": "<deleted-userId>",
+        "type": "User"
+      },
+      "edata": {
+        "organisationId": "0126796199493140480",
+        "userId": "a102c136-c6da-4c6c-b6b7-0f0681e1aab9",
+        "suggested_users": [
+          {
+            "role": "ORG_ADMIN",
+            "users": [
+              "<orgAdminUserId>"
+            ]
+          },
+          {
+            "role": "CONTENT_CREATOR",
+            "users": [
+              "<contentCreatorUserId>"
+            ]
+          },
+          {
+            "role": "COURSE_MENTOR",
+            "users": [
+              "<courseMentorUserId>"
+            ]
+          }
+        ],
+        "action": "delete-user",
+        "iteration": 1
+      }
+    }
+   * @returns {Promise} success Data.
+   */
+    static deleteUserPIIData(userDeleteEvent) {
+        return new Promise(async (resolve, reject) => {
+            try{
+                let userId = userDeleteEvent.edata.userId;
+                let filter = {
+                    userId: userId,
+                }
+                let updateProfile =  {
+                $set: {
+                    "userProfile.firstName": CONSTANTS.common.DELETED_USER,
+                },
+                $unset: {
+                    "userProfile.email": 1,
+                    "userProfile.maskedEmail": 1,
+                    "userProfile.maskedPhone": 1,
+                    "userProfile.recoveryEmail": 1,
+                    "userProfile.phone": 1,
+                    "userProfile.lastName": 1,
+                    "userProfile.prevUsedPhone": 1,
+                    "userProfile.prevUsedEmail": 1,
+                    "userProfile.recoveryPhone": 1,
+                    "userProfile.dob": 1,
+                    "userProfile.encEmail": 1,
+                    "userProfile.encPhone": 1
+                },
+                };
+                let deleteUserPIIDataResult = await projectQueries.updateMany(filter, updateProfile)
+                if (deleteUserPIIDataResult && deleteUserPIIDataResult.nModified > 0) {
+                    if(telemetryEventOnOff !== CONSTANTS.common.OFF){
+                        /**
+                         * Telemetry Raw Event
+                         * {"eid":"","ets":1700188609568,"ver":"3.0","mid":"e55a91cd-7964-46bc-b756-18750787fb32","actor":{},"context":{"channel":"","pdata":{"id":"projectservice","pid":"manage-learn","ver":"7.0.0"},"env":"","cdata":[{"id":"adf3b621-619b-4195-a82d-d814eecdb21f","type":"Request"}],"rollup":{}},"object":{},"edata":{}}
+                         */
+                        let rawEvent = await UTILS.generateTelemetryEventSkeletonStructure();
+                        rawEvent.eid = CONSTANTS.common.AUDIT;
+                        rawEvent.context.channel = userDeleteEvent.context.channel;
+                        rawEvent.context.env = CONSTANTS.common.USER;
+                        rawEvent.edata.state = CONSTANTS.common.DELETE_STATE;
+                        rawEvent.edata.type = CONSTANTS.common.USER_DELETE_TYPE;
+                        rawEvent.edata.props = [];
+                        let userObject = {
+                            id: userId,
+                            type: CONSTANTS.common.USER,
+                        };
+                        rawEvent.actor = userObject;
+                        rawEvent.object = userObject;
+                        rawEvent.context.pdata.pid = `${process.env.ID}.${CONSTANTS.common.USER_DELETE_MODULE}`
+
+                        let telemetryEvent = await UTILS.generateTelemetryEvent(rawEvent);
+                        telemetryEvent.lname = CONSTANTS.common.TELEMTRY_EVENT_LOGGER;
+                        telemetryEvent.level = CONSTANTS.common.INFO_LEVEL
+
+                        await kafkaProducersHelper.pushTelemetryEventToKafka(telemetryEvent);
+                    }
+                    return resolve({ success: true });
+                }else{
+                    return resolve({ success: true });
+                }
+            } catch (error) {
+                return reject(error);
+            }
+        });
+    }
 
     /**
       * Projects boolean data.
@@ -140,6 +267,11 @@ module.exports = class UserProjectsHelper {
 
                 const projectsModel = Object.keys(schemas["projects"].schema);
 
+                let keysToRemoveFromUpdation = ["userRoleInformation","userProfile","certificate"]
+                keysToRemoveFromUpdation.forEach( key => {
+                    if (data[key])delete data[key];
+                })
+                
                 let updateProject = {};
                 let projectData = await _projectData(data);
                 if (projectData && projectData.success == true) {
@@ -176,7 +308,7 @@ module.exports = class UserProjectsHelper {
                 let addOrUpdateEntityToProject = false;
 
                 if (data.entityId) {
-
+                    
                     // If entity is not present in project or new entity is updated.
                     if (
                         !userProject[0].entityInformation ||
@@ -188,7 +320,7 @@ module.exports = class UserProjectsHelper {
                         addOrUpdateEntityToProject = true;
                     }
                 }
-
+                
                 if (addOrUpdateEntityToProject) {
 
                     let entityInformation =
@@ -293,11 +425,17 @@ module.exports = class UserProjectsHelper {
                     taskReport.total = updateProject.tasks.length;
 
                     updateProject.tasks.forEach(task => {
-                        if (!taskReport[task.status]) {
-                            taskReport[task.status] = 1;
+                        //consider tasks where isDeleted is false.
+                        if ( task.isDeleted == false ) {
+                            if (!taskReport[task.status]) {
+                                taskReport[task.status] = 1;
+                            } else {
+                                taskReport[task.status] += 1;
+                            }
                         } else {
-                            taskReport[task.status] += 1;
+                            taskReport.total = taskReport.total - 1;
                         }
+                        
                     });
 
                     updateProject["taskReport"] = taskReport;
@@ -337,12 +475,14 @@ module.exports = class UserProjectsHelper {
                     }
                 }
 
-                updateProject.status = UTILS.convertProjectStatus(data.status);
+                if ( data.status && data.status !== "" ) {
+                   updateProject.status = UTILS.convertProjectStatus(data.status);
+                }
                 
                 if ( data.status == CONSTANTS.common.COMPLETED_STATUS || data.status == CONSTANTS.common.SUBMITTED_STATUS ) {
                     updateProject.completedDate = new Date();
                 }
-
+                
                 let projectUpdated =
                     await projectQueries.findOneAndUpdate(
                         {
@@ -361,9 +501,10 @@ module.exports = class UserProjectsHelper {
                         status: HTTP_STATUS_CODE['bad_request'].status
                     }
                 }
-
+                
+                //  push project details to kafka
                 await kafkaProducersHelper.pushProjectToKafka(projectUpdated);
-
+            
                 return resolve({
                     success: true,
                     message: CONSTANTS.apiResponses.USER_PROJECT_UPDATED,
@@ -434,7 +575,7 @@ module.exports = class UserProjectsHelper {
                         userToken,
                         isATargetedSolution
                     );
-
+                
                 if (!solutionAndProgramCreation.success) {
                     throw {
                         status: HTTP_STATUS_CODE['bad_request'].status,
@@ -444,9 +585,9 @@ module.exports = class UserProjectsHelper {
 
                 result.solutionInformation = _.pick(
                     solutionAndProgramCreation.data.solution,
-                    ["name", "externalId", "description", "_id", "entityType"]
+                    ["name", "externalId", "description", "_id", "entityType", "certificateTemplateId"]
                 );
-
+                
                 result.solutionInformation._id =
                     ObjectId(result.solutionInformation._id);
 
@@ -469,6 +610,99 @@ module.exports = class UserProjectsHelper {
                     result["link"] = solutionAndProgramCreation.data.parentSolutionInformation.link ? solutionAndProgramCreation.data.parentSolutionInformation.link : "";
                 }
 
+                return resolve({
+                    success: true,
+                    data: result
+                });
+
+            } catch (error) {
+                return resolve({
+                    status:
+                        error.status ?
+                            error.status : HTTP_STATUS_CODE['internal_server_error'].status,
+                    success: false,
+                    message: error.message,
+                    data: {}
+                });
+            }
+        });
+    }
+
+     /**
+     * Program and solution information
+     * @method
+     * @name getProgramAndSolutionDetails
+     * @param {Object} solutionDetails - solution details.
+     * @returns {Object} return program and solution data.
+     * example : 
+     * response : {
+        "success":true,
+        "data":{
+            "solutionInformation":{
+                "name":"Keep Our Schools Alive (Petition) - With Certificate 2",
+                "externalId":"IDEAIMP-4-1687489894154-PROJECT-SOLUTION-1688365299788",
+                "description":"Leveraging the huge number of private schools to show the significance of the financial problem by creating a petition and presenting to the authorities.",
+                "_id":64a268f34b9d0c124fd8ed80,
+                "certificateTemplateId":64950d67955f600008e2aff3
+            },
+            "solutionId":64a268f34b9d0c124fd8ed80,
+            "solutionExternalId":"IDEAIMP-4-1687489894154-PROJECT-SOLUTION-1688365299788",
+            "programInformation":{
+                "_id":64a268f34b9d0c124fd8ed7d,
+                "description":"Certificate Test Program 6.0",
+                "externalId":"Pgm_Certificate_Test_Program_6.0_QA-1688365299788",
+                "isAPrivateProgram":true,
+                "name":"Certificate Test Program 6.0"
+            },
+            "programId":64a268f34b9d0c124fd8ed7d,
+            "programExternalId":"Pgm_Certificate_Test_Program_6.0_QA-1688365299788",
+            "isAPrivateProgram":true,
+            "link":"750f4f6ebb390ad5f7038a8fbc8e1c3f"
+        }
+        }
+    */
+
+     static getProgramAndSolutionDetails(       
+        solutionDetails
+    ) {
+        return new Promise(async (resolve, reject) => {
+            try {
+
+                let result = {};
+                result.solutionInformation = _.pick(
+                    solutionDetails,
+                    ["name", "externalId", "description", "_id", "entityType", "certificateTemplateId"]
+                );
+                
+                result.solutionInformation._id =
+                    ObjectId(result.solutionInformation._id);
+
+                result["solutionId"] = ObjectId(result.solutionInformation._id);
+                result["solutionExternalId"] = result.solutionInformation.externalId;
+                
+                // Adding program informations
+                result.programInformation = {
+                    _id: solutionDetails.programId,
+                    description: solutionDetails.programDescription,
+                    externalId: solutionDetails.programExternalId,
+                    isAPrivateProgram: solutionDetails.isAPrivateProgram,
+                    name: solutionDetails.programName
+                };
+                  
+
+                result["programId"] = ObjectId(result.programInformation._id);
+                result["programExternalId"] = result.programInformation.externalId;
+                result["isAPrivateProgram"] = result.programInformation.isAPrivateProgram;
+
+                result.programInformation._id =
+                    ObjectId(result.programInformation._id);
+                // Get link from parent solution
+                let solutionData = await solutionsHelper.solutionDocuments({
+                    _id: solutionDetails.parentSolutionId,
+                },
+                ["link"]);
+
+                result["link"] = ( solutionData.length > 0 && solutionData[0].link ) ? solutionData[0].link : "";
 
                 return resolve({
                     success: true,
@@ -541,6 +775,7 @@ module.exports = class UserProjectsHelper {
                 if (!result.success) {
                     return resolve(result);
                 }
+
 
                 return resolve({
                     success: true,
@@ -914,7 +1149,6 @@ module.exports = class UserProjectsHelper {
                     "projectTemplateId"
                 ]
                 );
-
                 if (!project.length > 0) {
                     throw {
                         status: HTTP_STATUS_CODE['bad_request'].status,
@@ -1024,7 +1258,7 @@ module.exports = class UserProjectsHelper {
    static detailsV2( projectId,solutionId,userId,userToken,bodyData,appName = "",appVersion = "",templateId = "" ) {
     return new Promise(async (resolve, reject) => {
         try {
-
+            
             let solutionExternalId = "";
             
             if( templateId !== "" ) {
@@ -1046,40 +1280,81 @@ module.exports = class UserProjectsHelper {
                 solutionId = templateDocuments[0].solutionId;
                 solutionExternalId = templateDocuments[0].solutionExternalId;
             }
+            
+            if(bodyData.hasOwnProperty("detailsPayload")){
+                let detailsPayload = {...bodyData.detailsPayload}
+                delete bodyData.detailsPayload
+                bodyData = {...detailsPayload, ...bodyData}
 
-            let userRoleInformation = _.omit(bodyData,["referenceFrom","submissions","hasAcceptedTAndC"]);
+            }
+            
+            let userRoleInformation = _.omit(bodyData,["referenceFrom","submissions","hasAcceptedTAndC","link"]);
+            
             if (projectId === "") {
-                
+                // This will check wether the user user is targeted to solution or not based on his userRoleInformation
+                const targetedSolutionId = await coreService.checkIfSolutionIsTargetedForUserProfile(userToken,userRoleInformation,solutionId)
+                //based on above api will check for projects wether its is private project or public project
                 const projectDetails = await projectQueries.projectDocument({
                     solutionId: solutionId,
-                    userId: userId
+                    userId: userId,
+                    isAPrivateProgram: targetedSolutionId.data.isATargetedSolution ? false : true
                 }, ["_id"]);
-
                 if( projectDetails.length > 0 ) {
                     projectId = projectDetails[0]._id;
                 } else {
-                
+                    let isAPrivateSolution = (targetedSolutionId.data.isATargetedSolution === false)  ? true : false;
                     let solutionDetails = {}
 
                     if( templateId === "" ) {
-                    
-                        solutionDetails = 
-                        await coreService.solutionDetailsBasedOnRoleAndLocation(
-                            userToken,
-                            bodyData,
-                            solutionId
-                        );
-
-                        if( !solutionDetails.success || (solutionDetails.data.data && !solutionDetails.data.data.length > 0) ) {
-                            throw {
-                                status : HTTP_STATUS_CODE["bad_request"].status,
-                                message : CONSTANTS.apiResponses.SOLUTION_DOES_NOT_EXISTS_IN_SCOPE
+                        // If solution Id of a private program is passed, fetch solution details
+                        if ( isAPrivateSolution && solutionId != "" ) {
+                            solutionDetails = await solutionsHelper.solutionDocuments({
+                                _id: solutionId,
+                                isAPrivateProgram: true
+                            },
+                            [
+                                "name",
+                                "externalId",
+                                "description",
+                                "programId",
+                                "programName",
+                                "programDescription",
+                                "programExternalId",
+                                "isAPrivateProgram",
+                                "projectTemplateId",
+                                "entityType",
+                                "entityTypeId",
+                                "language",
+                                "creator"
+                            ]);
+                            if( !solutionDetails.length > 0 ) {
+                                throw {
+                                    status : HTTP_STATUS_CODE["bad_request"].status,
+                                    message : CONSTANTS.apiResponses.SOLUTION_NOT_FOUND
+                                }
                             }
+                            solutionDetails = solutionDetails[0];
+                        } else {
+                            solutionDetails = 
+                            await coreService.solutionDetailsBasedOnRoleAndLocation(
+                                userToken,
+                                bodyData,
+                                solutionId,
+                                isAPrivateSolution
+                            );
+
+                            if( !solutionDetails.success || (solutionDetails.data.data && !solutionDetails.data.data.length > 0) ) {
+                                throw {
+                                    status : HTTP_STATUS_CODE["bad_request"].status,
+                                    message : CONSTANTS.apiResponses.SOLUTION_DOES_NOT_EXISTS_IN_SCOPE
+                                }
+                            }
+
+                            solutionDetails = solutionDetails.data;
                         }
 
-                        solutionDetails = solutionDetails.data;
-
                     } else {
+                        
                         solutionDetails =
                         await surveyService.listSolutions([solutionExternalId]);
                         if( !solutionDetails.success ) {
@@ -1090,8 +1365,48 @@ module.exports = class UserProjectsHelper {
                         }
                         
                         solutionDetails = solutionDetails.data[0];
+                        
                     }
-
+                    // check for requestForPIIConsent data
+                    let queryData = {};
+                    queryData["_id"] = solutionDetails.programId;
+                    let programDetails = await programsQueries.programsDocument(queryData,["requestForPIIConsent"]);
+                    
+                    // if requestForPIIConsent not there do not call program join
+                    if ( programDetails.length > 0 && programDetails[0].hasOwnProperty('requestForPIIConsent')) {
+                        
+                        // program join API call it will increment the noOfResourcesStarted counter and will make user join program
+                        // before creating any project this api has to called 
+                        let programUsers = await programUsersQueries.programUsersDocument(
+                            {
+                                userId : userId,
+                                programId : solutionDetails.programId
+                            },
+                            [
+                                "_id",
+                                "resourcesStarted"
+                            ]
+                        );
+        
+                        if (!programUsers.length > 0 || ( programUsers.length > 0 && programUsers[0].resourcesStarted == false)) {
+                            let programJoinBody = {};
+                            programJoinBody.userRoleInformation = userRoleInformation;
+                            programJoinBody.isResource = true;
+                            programJoinBody.consentShared = true;
+                            let joinProgramData = await coreService.joinProgram (
+                                solutionDetails.programId,
+                                programJoinBody,
+                                userToken
+                            );
+                            if ( !joinProgramData.success ) {
+                                return resolve({ 
+                                    status: HTTP_STATUS_CODE.bad_request.status, 
+                                    message: CONSTANTS.apiResponses.PROGRAM_JOIN_FAILED
+                                });
+                            }
+                        }
+                    }
+                    
                     let projectCreation = 
                     await this.userAssignedProjectCreation(
                         solutionDetails.projectTemplateId,
@@ -1102,7 +1417,7 @@ module.exports = class UserProjectsHelper {
                     if( !projectCreation.success ) {
                         return resolve(projectCreation);
                     }
-    
+                    
                     projectCreation.data["isAPrivateProgram"] = 
                     solutionDetails.isAPrivateProgram;
     
@@ -1147,18 +1462,87 @@ module.exports = class UserProjectsHelper {
                     if( appVersion !== "" ) {
                         projectCreation.data["appInformation"]["appVersion"] = appVersion;
                     }
+                    
+                    if ( solutionDetails.certificateTemplateId && solutionDetails.certificateTemplateId !== "" ) {
+                        // <- Add certificate template details to projectCreation data if present ->
+                        const certificateTemplateDetails = await certificateTemplateQueries.certificateTemplateDocument({
+                            _id : solutionDetails.certificateTemplateId
+                        });
+                        
+                        // create certificate object and add data if certificate template is present.
+                        if ( certificateTemplateDetails.length > 0 ) {
+                            projectCreation.data["certificate"] = _.pick(certificateTemplateDetails[0], ['templateUrl', 'status', 'criteria']);
+                            projectCreation.data["certificate"]["templateId"] = solutionDetails.certificateTemplateId;
+                        }
+                    }
+                    
+                    let getUserProfileFromObservation = false;
     
                     if( bodyData && Object.keys(bodyData).length > 0 ) {
     
                         if( bodyData.hasAcceptedTAndC ) {
                             projectCreation.data.hasAcceptedTAndC = bodyData.hasAcceptedTAndC;
                         }
+                        if( bodyData.link ) {
+                            projectCreation.data.link = bodyData.link;
+                        }
 
                         if( bodyData.referenceFrom ) {
                             projectCreation.data.referenceFrom = bodyData.referenceFrom;
                             
                             if( bodyData.submissions ) {
+                                if ( bodyData.submissions.observationId && bodyData.submissions.observationId != "" ) {
+                                    getUserProfileFromObservation = true;
+                                }
                                 projectCreation.data.submissions = bodyData.submissions;
+
+                                let entityInformation = 
+                                await entitieHelper.listByLocationIds(
+                                    [bodyData.submissions.entityId] 
+                                );
+    
+                                if( !entityInformation.success ) {
+                                    throw {
+                                        message : CONSTANTS.apiResponses.ENTITY_NOT_FOUND,
+                                        status : HTTP_STATUS_CODE['bad_request'].status
+                                    }
+                                }
+    
+                                let entityDetails = await _entitiesMetaInformation(
+                                    entityInformation.data
+                                );
+    
+                                if ( entityDetails && entityDetails.length > 0 ) {
+                                    projectCreation.data["entityInformation"] = entityDetails[0];
+                                }
+            
+                                projectCreation.data.entityId = entityInformation.data[0]._id;
+                            }
+                        } else {
+                            if( 
+                                solutionDetails.entityType && bodyData[solutionDetails.entityType] 
+                            ) {
+                                let entityInformation = 
+                                await entitieHelper.listByLocationIds(
+                                    [bodyData[solutionDetails.entityType]] 
+                                );
+    
+                                if( !entityInformation.success ) {
+                                    throw {
+                                        message : CONSTANTS.apiResponses.ENTITY_NOT_FOUND,
+                                        status : HTTP_STATUS_CODE['bad_request'].status
+                                    }
+                                }
+    
+                                let entityDetails = await _entitiesMetaInformation(
+                                    entityInformation.data
+                                );
+    
+                                if ( entityDetails && entityDetails.length > 0 ) {
+                                    projectCreation.data["entityInformation"] = entityDetails[0];
+                                }
+            
+                                projectCreation.data.entityId = entityInformation.data[0]._id;
                             }
                         }
     
@@ -1166,33 +1550,121 @@ module.exports = class UserProjectsHelper {
                             projectCreation.data["userRole"] = bodyData.role;
                         }
     
-                        if( 
-                            solutionDetails.entityType && bodyData[solutionDetails.entityType] 
-                        ) {
-                            let entityInformation = 
-                            await surveyService.listEntitiesByLocationIds(
-                                userToken,
-                                [bodyData[solutionDetails.entityType]] 
-                            );
-        
-                            if( !entityInformation.success ) {
-                                return resolve(entityInformation);
-                            }
-        
-                            projectCreation.data["entityInformation"] = _entitiesMetaInformation(
-                                entityInformation.data
-                            )[0];
-        
-                            projectCreation.data.entityId = entityInformation.data[0]._id;
-                        }
-    
                     }
     
                     projectCreation.data.status = CONSTANTS.common.STARTED;
                     projectCreation.data.lastDownloadedAt = new Date();
+                    
+                    // fetch userRoleInformation from observation if referenecFrom is observation
+                    let addReportInfoToSolution = false;
+                    if ( getUserProfileFromObservation ){
+
+                        let observationDetails = await surveyService.observationDetails(
+                            userToken,
+                            bodyData.submissions.observationId
+                        );
+
+                        if( observationDetails.data &&
+                            Object.keys(observationDetails.data).length > 0 && 
+                            observationDetails.data.userRoleInformation &&
+                            Object.keys(observationDetails.data.userRoleInformation).length > 0
+                        ) {
+
+                            userRoleInformation = observationDetails.data.userRoleInformation;
+                            
+                        }
+
+                        if( observationDetails.data &&
+                            Object.keys(observationDetails.data).length > 0 && 
+                            observationDetails.data.userProfile &&
+                            Object.keys(observationDetails.data.userProfile).length > 0
+                        ) {
+
+                            projectCreation.data.userProfile = observationDetails.data.userProfile;
+                            addReportInfoToSolution = true; 
+                            
+                        } else {
+                            //Fetch user profile information by calling sunbird's user read api.
+
+                            let userProfile = await userProfileService.profile(userToken, userId);
+                            if ( userProfile.success && 
+                                 userProfile.data &&
+                                 userProfile.data.response
+                            ) {
+                                    projectCreation.data.userProfile = userProfile.data.response;
+                                    addReportInfoToSolution = true; 
+                            } else {
+                                throw {
+                                    message: CONSTANTS.apiResponses.FAILED_TO_START_RESOURCE,
+                                    status: HTTP_STATUS_CODE["failed_dependency"].status,
+                                };
+                            }
+                        } 
+
+                    } else {
+                        //Fetch user profile information by calling sunbird's user read api.
+
+                        let userProfileData = await userProfileService.profile(userToken, userId);
+                        if ( userProfileData.success && 
+                             userProfileData.data &&
+                             userProfileData.data.response
+                        ) {
+                                projectCreation.data.userProfile = userProfileData.data.response;
+                                addReportInfoToSolution = true; 
+                        } else {
+                            throw {
+                                message: CONSTANTS.apiResponses.FAILED_TO_START_RESOURCE,
+                                status: HTTP_STATUS_CODE["failed_dependency"].status,
+                            };
+                        }
+                    }
+                    
                     projectCreation.data.userRoleInformation = userRoleInformation;
-    
+                    
+                    //compare & update userProfile with userRoleInformation
+                    if ( projectCreation.data.userProfile && userRoleInformation && Object.keys(userRoleInformation).length > 0 && Object.keys(projectCreation.data.userProfile).length > 0 ) {
+
+                        let updatedUserProfile = await _updateUserProfileBasedOnUserRoleInfo(
+                            projectCreation.data.userProfile,
+                            userRoleInformation
+                        );
+
+                        if (updatedUserProfile && updatedUserProfile.success == true && updatedUserProfile.profileMismatchFound == true) {
+                            projectCreation.data.userProfile = updatedUserProfile.data;
+                        }
+                        // checking the reqbody data and userLocation type matches or not
+                        for (let key in userRoleInformation) {
+                            // Skip role validation
+                            if (key === 'role') {
+                                continue;
+                            }
+                            let dataPresent;
+                            if (key === 'school') {
+                                dataPresent = projectCreation.data.userProfile.userLocations.find(location => location.code === userRoleInformation[key]);
+                            } else {
+                                dataPresent = projectCreation.data.userProfile.userLocations.find(location => location.id === userRoleInformation[key]);
+                            }
+                            if (!dataPresent) {
+                                throw {
+                                    message: CONSTANTS.apiResponses.FAILED_TO_START_RESOURCE,
+                                    status: HTTP_STATUS_CODE["failed_dependency"].status,
+                                };
+                            }
+                        } 
+                    } else {
+                        throw {
+                            message: CONSTANTS.apiResponses.FAILED_TO_START_RESOURCE,
+                            status: HTTP_STATUS_CODE["failed_dependency"].status,
+                        };
+                    }
                     let project = await projectQueries.createProject(projectCreation.data);
+                    
+                    if ( addReportInfoToSolution && project.solutionId ) {
+                        let updateSolution = await solutionsHelper.addReportInformationInSolution(
+                            project.solutionId,
+                            project.userProfile
+                        ); 
+                    }
 
                     await kafkaProducersHelper.pushProjectToKafka(project);
                     
@@ -1212,6 +1684,21 @@ module.exports = class UserProjectsHelper {
             } else {
                 projectDetails.data.status = UTILS.convertProjectStatus(projectDetails.data.status);
             }
+            // make templateUrl downloadable befor passing to front-end
+            if ( projectDetails.data.certificate &&
+                 projectDetails.data.certificate.templateUrl &&
+                 projectDetails.data.certificate.templateUrl !== "" 
+            ) {
+                let certificateTemplateDownloadableUrl =
+                    await coreService.getDownloadableUrl(
+                        {
+                            filePaths: [projectDetails.data.certificate.templateUrl]
+                        }
+                    );
+                    if ( certificateTemplateDownloadableUrl.success ) {
+                        projectDetails.data.certificate.templateUrl = certificateTemplateDownloadableUrl.data[0].url;
+                    }
+            } 
 
             return resolve({
                 success: true,
@@ -1245,7 +1732,6 @@ module.exports = class UserProjectsHelper {
     static userAssignedProjectCreation(templateId, userId, userToken) {
         return new Promise(async (resolve, reject) => {
             try {
-
                 const projectTemplateData =
                     await projectTemplateQueries.templateDocument({
                         status: CONSTANTS.common.PUBLISHED,
@@ -1284,7 +1770,7 @@ module.exports = class UserProjectsHelper {
                         await projectTemplatesHelper.tasksAndSubTasks(
                             projectTemplateData[0]._id
                         );
-
+        
                     if (tasksAndSubTasks.length > 0) {
 
                         result.tasks = _projectTask(tasksAndSubTasks);
@@ -1303,11 +1789,18 @@ module.exports = class UserProjectsHelper {
                         };
 
                         result.tasks.forEach(task => {
-                            if (!taskReport[task.status]) {
-                                taskReport[task.status] = 1;
+                            if ( task.isDeleted == false ) {
+
+                                if (!taskReport[task.status]) {
+                                    taskReport[task.status] = 1;
+                                } else {
+                                    taskReport[task.status] += 1;
+                                }
+
                             } else {
-                                taskReport[task.status] += 1;
+                                taskReport.total = taskReport.total - 1; 
                             }
+                            
                         });
 
                         result["taskReport"] = taskReport;
@@ -1351,11 +1844,22 @@ module.exports = class UserProjectsHelper {
     static add(data, userId, userToken, appName = "", appVersion = "") {
         return new Promise(async (resolve, reject) => {
             try {
-
                 const projectsModel = Object.keys(schemas["projects"].schema);
                 let createProject = {};
 
                 createProject["userId"] = createProject["createdBy"] = createProject["updatedBy"] = userId;
+
+                //Fetch user profile information by calling sunbird's user read api.
+
+                let userProfile = await userProfileService.profile(userToken, userId);
+                if ( userProfile.success && 
+                     userProfile.data &&
+                     userProfile.data.response
+                ) {
+                    createProject.userProfile = userProfile.data.response;
+                } 
+
+                
 
                 let projectData = await _projectData(data);
                 if (projectData && projectData.success == true) {
@@ -1398,7 +1902,9 @@ module.exports = class UserProjectsHelper {
                     createProject =
                         _.merge(createProject, programAndSolutionInformation.data);
                 } 
-                if( data.programId && data.programId !== "" ){
+
+                if (data.programId && data.programId !== "") {
+
                     let queryData = {};
                     queryData["_id"] = data.programId;
                     let programDetails = await programsQueries.programsDocument(queryData,
@@ -1420,6 +1926,7 @@ module.exports = class UserProjectsHelper {
                     createProject =
                         _.merge(createProject, programInformationData);
                 }
+                
 
                 if (data.tasks) {
 
@@ -1432,11 +1939,17 @@ module.exports = class UserProjectsHelper {
                     taskReport.total = createProject.tasks.length;
 
                     createProject.tasks.forEach(task => {
-                        if (!taskReport[task.status]) {
-                            taskReport[task.status] = 1;
+                        if ( task.isDeleted == false ) {
+                            if (!taskReport[task.status]) {
+                                taskReport[task.status] = 1;
+                            } else {
+                                taskReport[task.status] += 1;
+                            }
                         } else {
-                            taskReport[task.status] += 1;
+                            //if task is deleted it is not counted in total.
+                            taskReport.total = taskReport.total - 1;
                         }
+                        
                     });
 
                     createProject["taskReport"] = taskReport;
@@ -1506,7 +2019,6 @@ module.exports = class UserProjectsHelper {
                         hasAcceptedTAndC : userProject.hasAcceptedTAndC ? userProject.hasAcceptedTAndC : false
                     }
                 });
-
             } catch (error) {
                 return resolve({
                     status:
@@ -1556,7 +2068,12 @@ module.exports = class UserProjectsHelper {
                             "endDate",
                             "tasks",
                             "categories",
-                            "programInformation.name"
+                            "programInformation.name",
+                            "recommendedFor",
+                            "link",
+                            "remarks",
+                            "attachments",
+                            "taskReport.completed"
                         ]
                     );
                 }
@@ -1567,7 +2084,7 @@ module.exports = class UserProjectsHelper {
                     { "$match": { _id: ObjectId(projectId), isDeleted: false} },
                     { "$project": {
                         "status": 1, "title": 1, "startDate": 1, "metaInformation.goal": 1, "metaInformation.duration":1,
-                        "categories" : 1, "programInformation.name": 1, "description" : 1,
+                        "categories" : 1, "programInformation.name": 1, "description" : 1, "recommendedFor" : 1, "link" : 1, "remarks" : 1, "attachments" : 1,  "taskReport.completed" : 1,
                         tasks: { "$filter": {
                             input: '$tasks',
                             as: 'tasks',
@@ -1589,11 +2106,75 @@ module.exports = class UserProjectsHelper {
                 projectDocument.goal = projectDocument.metaInformation ? projectDocument.metaInformation.goal : "";
                 projectDocument.duration = projectDocument.metaInformation ? projectDocument.metaInformation.duration : "";
                 projectDocument.programName = projectDocument.programInformation ? projectDocument.programInformation.name : "";
-                projectDocument.category = [];
+                projectDocument.remarks = projectDocument.remarks ? projectDocument.remarks : "";
+                projectDocument.taskcompleted = projectDocument.taskReport.completed ? projectDocument.taskReport.completed : CONSTANTS.common.DEFAULT_TASK_COMPLETED;
+                
+                //store tasks and attachment data into object
+                let projectFilter = {
+                    tasks : projectDocument.tasks,
+                    attachments : projectDocument.attachments
+                }
+                
+                //returns project tasks and attachments with downloadable urls
+                let projectDataWithUrl = await _projectInformation( projectFilter );
+
+                //replace projectDocument Data 
+                if ( projectDataWithUrl.success && 
+                     projectDataWithUrl.data && 
+                     projectDataWithUrl.data.tasks && 
+                     projectDataWithUrl.data.tasks.length > 0
+                ) {
+                    
+                    projectDocument.tasks = projectDataWithUrl.data.tasks ;
+                }
+
+                if ( projectDataWithUrl.success && 
+                     projectDataWithUrl.data && 
+                     projectDataWithUrl.data.attachments && 
+                     projectDataWithUrl.data.attachments.length > 0
+                ) {
+                   projectDocument.attachments = projectDataWithUrl.data.attachments ;
+                }
+               
+
+                //get image link and other document links
+                let imageLink = [];
+                let evidenceLink = [];
+                if ( projectDocument.attachments && projectDocument.attachments.length > 0 ) {
+                    projectDocument.attachments.forEach( attachment => {
+                        if( attachment.type == CONSTANTS.common.IMAGE_DATA_TYPE && attachment.url && attachment.url !== "" ) {
+                            imageLink.push( attachment.url );
+                        } else if ( attachment.type == CONSTANTS.common.ATTACHMENT_TYPE_LINK && attachment.name && attachment.name !== "" ) {
+                            let data = {
+                                type : attachment.type,
+                                url : attachment.name
+                            }
+                            evidenceLink.push( data );
+                        } else if ( attachment.url && attachment.url !== "" ) {
+                            let data = {
+                                type : attachment.type,
+                                url : attachment.url
+                            }
+                            evidenceLink.push( data );
+                        }
+                    })
+                }
+                projectDocument.evidenceLink = evidenceLink;       
+                projectDocument.imageLink = imageLink;
+                        
+                projectDocument.category = [];       
 
                 if (projectDocument.categories && projectDocument.categories.length > 0) {
                     projectDocument.categories.forEach( category => {
                         projectDocument.category.push(category.name);
+                    })
+                }
+
+                projectDocument.recommendedForRoles = [];
+
+                if (projectDocument.recommendedFor && projectDocument.recommendedFor.length > 0) {
+                    projectDocument.recommendedFor.forEach( recommend => {
+                        projectDocument.recommendedForRoles.push(recommend.code);
                     })
                 }
                 
@@ -1619,12 +2200,11 @@ module.exports = class UserProjectsHelper {
                 delete projectDocument.categories;
                 delete projectDocument.metaInformation;
                 delete projectDocument.programInformation;
-
+                delete projectDocument.recommendedFor;
                 
                 if (UTILS.revertStatusorNot(appVersion)) {
                     projectDocument.status = UTILS.revertProjectStatus(projectDocument.status);
                 }
-                
                 let response = await reportService.projectAndTaskReport(userToken, projectDocument, projectPdf);
 
                 if (response && response.success == true) {
@@ -1690,11 +2270,11 @@ module.exports = class UserProjectsHelper {
 
             if ( filter && filter !== "" ) {
                 if( filter === CONSTANTS.common.CREATED_BY_ME ) {
-                    query["isAPrivateProgram"] = {
-                        $ne : false
-                    };
                     query["referenceFrom"] = {
                         $ne : CONSTANTS.common.LINK
+                    };
+                    query["isAPrivateProgram"] = {
+                        $ne : false
                     };
                 } else if( filter == CONSTANTS.common.ASSIGN_TO_ME ) {
                     query["isAPrivateProgram"] = false;
@@ -1702,7 +2282,7 @@ module.exports = class UserProjectsHelper {
                     query["referenceFrom"] = CONSTANTS.common.LINK;
                 }
             }
-
+            
             let projects = await this.projects(
                 query,
                 pageSize,
@@ -1718,21 +2298,25 @@ module.exports = class UserProjectsHelper {
                     "solutionExternalId",
                     "lastDownloadedAt",
                     "hasAcceptedTAndC",
-                    "referenceFrom"
+                    "referenceFrom",
+                    "status",
+                    "certificate"
                 ]
             );
-
+            
             let totalCount = 0;
             let data = [];
-            
-            if( projects.success && projects.data ) {
+            if( projects.success && projects.data && projects.data.data && Object.keys(projects.data.data).length > 0 ) {
 
                 totalCount = projects.data.count;
                 data = projects.data.data;
-
+                
                 if( data.length > 0 ) {
+                    let templateFilePath = [];
                     data.forEach( projectData => {
+                        
                         projectData.name = projectData.title;
+
 
                         if (projectData.programInformation) {
                             projectData.programName = projectData.programInformation.name;
@@ -1745,9 +2329,45 @@ module.exports = class UserProjectsHelper {
                         }
 
                         projectData.type = CONSTANTS.common.IMPROVEMENT_PROJECT;
-
                         delete projectData.title;
+
+                        if (projectData.certificate &&
+                            projectData.certificate.osid &&
+                            projectData.certificate.osid !== "" && 
+                            projectData.certificate.templateUrl &&
+                            projectData.certificate.templateUrl !== ""
+                            ) {
+                                templateFilePath.push(projectData.certificate.templateUrl);
+                        }
+
                     });
+
+                    if( templateFilePath.length > 0 ) {
+
+                        let certificateTemplateDownloadableUrl = 
+                            await coreService.getDownloadableUrl(
+                                {
+                                    filePaths: templateFilePath
+                                }
+                        );
+                        if ( !certificateTemplateDownloadableUrl.success ) {
+                            throw {
+                                message:  CONSTANTS.apiResponses.DOWNLOADABLE_URL_NOT_FOUND
+                            };
+                        }
+                        // map downloadable templateUrl to corresponding project data
+                        data.forEach(projectData => {
+                            if (projectData.certificate) {
+                                var itemFromUrlArray = certificateTemplateDownloadableUrl.data.find(item=> item.filePath == projectData.certificate.templateUrl);
+                                    if (itemFromUrlArray) {
+                                        projectData.certificate.templateUrl = itemFromUrlArray.url;
+                                    }
+                                }
+                            }
+                            
+                        )
+                    }
+
                 }
             }
             
@@ -1807,7 +2427,8 @@ module.exports = class UserProjectsHelper {
                     "programInformation",
                     "title",
                     "description",
-                    "projectTemplateId"
+                    "projectTemplateId",
+                    "certificate.templateId"
                 ]
             );
             
@@ -1844,7 +2465,6 @@ module.exports = class UserProjectsHelper {
   static list( bodyData ) {
     return new Promise(async (resolve, reject) => {
         try {
-
             let projects = await projectQueries.projectDocument(
                 bodyData.query,
                 bodyData.projection,
@@ -1887,8 +2507,7 @@ module.exports = class UserProjectsHelper {
                         "",
                         isATargetedSolution
                     );
-
-
+            
                 if (
                     libraryProjects.data &&
                     !Object.keys(libraryProjects.data).length > 0
@@ -1897,8 +2516,9 @@ module.exports = class UserProjectsHelper {
                         message: CONSTANTS.apiResponses.PROJECT_TEMPLATE_NOT_FOUND,
                         status: HTTP_STATUS_CODE['bad_request'].status
                     };
+                    
                 }
-
+                
                 let taskReport = {};
 
                 if (
@@ -1914,11 +2534,17 @@ module.exports = class UserProjectsHelper {
                     taskReport.total = libraryProjects.data.tasks.length;
 
                     libraryProjects.data.tasks.forEach(task => {
-                        if (!taskReport[task.status]) {
-                            taskReport[task.status] = 1;
+                        if ( task.isDeleted == false ) {
+                            if (!taskReport[task.status]) {
+                                taskReport[task.status] = 1;
+                            } else {
+                                taskReport[task.status] += 1;
+                            }
                         } else {
-                            taskReport[task.status] += 1;
+                            //reduce total count if task is deleted.
+                            taskReport.total = taskReport.total - 1;
                         }
+                        
                     });
 
                     libraryProjects.data["taskReport"] = taskReport;
@@ -1937,9 +2563,40 @@ module.exports = class UserProjectsHelper {
                     libraryProjects.data.entityId = entityInformation.data[0]._id;
                 }
 
-                if( requestedData.solutionId && requestedData.solutionId !== "" && isATargetedSolution === false){
-
-                    let programAndSolutionInformation =
+                if( requestedData.solutionId && requestedData.solutionId !== "" && isATargetedSolution === false ){
+                    let programAndSolutionInformation = {};
+                    // Check if solutionId passed is private or not, if private and data is present, create program and solution information.
+                    let solutionDetails = await solutionsHelper.solutionDocuments({
+                        _id: requestedData.solutionId,
+                        isAPrivateProgram: true
+                    },
+                    [
+                        "_id",
+                        "name",
+                        "externalId",
+                        "description",
+                        "programId",
+                        "programName",
+                        "programDescription",
+                        "programExternalId",
+                        "isAPrivateProgram",
+                        "projectTemplateId",
+                        "entityType",
+                        "certificateTemplateId",
+                        "parentSolutionId"
+                    ]);
+                    // private solution exists
+                    if ( solutionDetails.length > 0 && solutionDetails[0].parentSolutionId ) {
+                        // This function will return programAndSolutionInformation
+                        /**
+                         * function privateProgramAndSolutionDetails 
+                         * Request:
+                         * @param {solutionDetails} solution data
+                         * @response Program and solution details
+                        */
+                        programAndSolutionInformation = await this.getProgramAndSolutionDetails(solutionDetails[0]);
+                    } else {
+                        programAndSolutionInformation =
                         await this.createProgramAndSolution(
                             requestedData.programId,
                             requestedData.programName,
@@ -1948,7 +2605,8 @@ module.exports = class UserProjectsHelper {
                             requestedData.solutionId,
                             isATargetedSolution
                         );
-
+                    }
+                    
                     if (!programAndSolutionInformation.success) {
                         return resolve(programAndSolutionInformation);
                     }
@@ -1992,9 +2650,36 @@ module.exports = class UserProjectsHelper {
                         libraryProjects.data,
                         programAndSolutionInformation.data
                     )
-
                 }
-
+                //  <- Add certificate template data
+                if ( 
+                    libraryProjects.data.certificateTemplateId &&
+                    libraryProjects.data.certificateTemplateId !== ""
+                ){
+                    // <- Add certificate template details to projectCreation data if present ->
+                    const certificateTemplateDetails = await certificateTemplateQueries.certificateTemplateDocument({
+                        _id : libraryProjects.data.certificateTemplateId
+                    });
+                    
+                    // create certificate object and add data if certificate template is present.
+                    if ( certificateTemplateDetails.length > 0 ) {
+                        libraryProjects.data["certificate"] = _.pick(certificateTemplateDetails[0], ['templateUrl', 'status', 'criteria']);
+                    }
+                    libraryProjects.data["certificate"]["templateId"] = libraryProjects.data.certificateTemplateId;
+                    delete  libraryProjects.data.certificateTemplateId;
+                }
+                
+                //Fetch user profile information by calling sunbird's user read api.
+                let addReportInfoToSolution = false;
+                let userProfile = await userProfileService.profile(userToken, userId);
+                if ( userProfile.success && 
+                     userProfile.data &&
+                     userProfile.data.response
+                ) {
+                    libraryProjects.data.userProfile = userProfile.data.response;
+                    addReportInfoToSolution = true;
+                } 
+    
                 libraryProjects.data.userId = libraryProjects.data.updatedBy = libraryProjects.data.createdBy = userId;
                 libraryProjects.data.lastDownloadedAt = new Date();
                 libraryProjects.data.status = CONSTANTS.common.STARTED;
@@ -2007,12 +2692,24 @@ module.exports = class UserProjectsHelper {
                     libraryProjects.data.endDate = requestedData.endDate;
                 }
 
+                if (requestedData.hasAcceptedTAndC) {
+                    libraryProjects.data.hasAcceptedTAndC = true;
+                }
+
                 libraryProjects.data.projectTemplateId = libraryProjects.data._id;
                 libraryProjects.data.projectTemplateExternalId = libraryProjects.data.externalId;
-
+                
                 let projectCreation = await database.models.projects.create(
                     _.omit(libraryProjects.data, ["_id"])
                 );
+        
+                if ( addReportInfoToSolution && projectCreation._doc.solutionId ) {
+
+                    let updateSolution = await solutionsHelper.addReportInformationInSolution(
+                        projectCreation._doc.solutionId,
+                        projectCreation._doc.userProfile
+                    );
+                }
                 
                 await kafkaProducersHelper.pushProjectToKafka(projectCreation);
 
@@ -2023,9 +2720,9 @@ module.exports = class UserProjectsHelper {
                         userToken
                     );
                 }
-
+                
                 projectCreation = await _projectInformation(projectCreation._doc);
-
+                
                 return resolve({
                     success: true,
                     message: CONSTANTS.apiResponses.PROJECTS_FETCHED,
@@ -2042,15 +2739,15 @@ module.exports = class UserProjectsHelper {
         })
     }
 
-      /**
-      * get project details.
-      * @method
-      * @name userProject 
-      * @param {String} projectId - project id.
-      * @returns {Object} Project details.
-     */
+    /**
+     * get project details.
+     * @method
+     * @name userProject 
+     * @param {String} projectId - project id.
+     * @returns {Object} Project details.
+    */
 
-       static userProject(projectId) {
+    static userProject(projectId) {
         return new Promise(async (resolve, reject) => {
             try {
 
@@ -2082,6 +2779,500 @@ module.exports = class UserProjectsHelper {
         })
     }
 
+    /**
+     * generate project certificate.
+     * @method
+     * @name generateCertificate 
+     * @param {Object} data - project data for certificate creation data.
+     * @returns {JSON} certificate details.
+    */
+
+    static generateCertificate(data) {
+        return new Promise(async (resolve, reject) => {
+            try {
+
+                // check eligibility of project for certificate creation
+                let eligibility = await this.checkCertificateEligibility(data);
+                if (!eligibility ){
+                    throw {
+                        message:  CONSTANTS.apiResponses.NOT_ELIGIBLE_FOR_CERTIFICATE
+                    };
+                }
+
+                // create payload for certificate generation
+                const certificateData = await this.createCertificatePayload(data);
+                
+                // call sunbird-RC to create certificate for project
+                const certificate = await this.createCertificate(certificateData, data._id)
+                
+                return resolve(certificate);
+
+            } catch (error) {
+                return resolve({
+                    success: false,
+                    message: error.message
+
+                });
+            }
+        })
+    }
+
+    /**
+     * check project eligibility for certificate.
+     * @method
+     * @name checkCertificateEligibility 
+     * @param {Object} data - project data for certificate creation data.
+     * @returns {Boolean} certificate eligibilty status.
+    */
+
+    static checkCertificateEligibility(data) {
+        return new Promise(async (resolve, reject) => {
+            try {
+                let eligible = false;
+                let updateObject = {
+                    "$set" : {}
+                };
+                //  validate certificate data, checking if it passes all criteria
+                let validateCriteria = await certificateValidationsHelper.criteriaValidation(data)
+                if ( validateCriteria.success ) {
+                    eligible = true;
+                } else {
+                    updateObject["$set"]["certificate.message"] = validateCriteria.message;
+                }
+                updateObject["$set"]["certificate.eligible"] = eligible;
+
+                // update project certificate data
+                await projectQueries.findOneAndUpdate(
+                    {
+                        _id: data._id
+                    },
+                    updateObject
+                );
+                
+                return resolve(eligible);
+            } catch (error) {
+                return resolve({
+                    success: false,
+                    message: error.message
+
+                });
+            }
+        })
+    }
+
+    /**
+     * createCertificatePayload.
+     * @method
+     * @name createCertificatePayload 
+     * @param {Object} data - project data for certificate creation data.
+     * @returns {Object} payload for certificate creation.
+    */
+
+    static createCertificatePayload(data) {
+        return new Promise(async (resolve, reject) => {
+            try {
+                console.log("Certificate issuer Kid: ",CERTIFICATE_ISSUER_KID)
+                
+                if(data.title.length > 75) {
+                    data.title = data.title.substring(0, 75) + '...';
+                }
+                
+                // get downloadable url for certificate template
+                if ( data.certificate.templateUrl && data.certificate.templateUrl !== "" ) {
+                    let certificateTemplateDownloadableUrl =
+                    await coreService.getDownloadableUrl(
+                        {
+                            filePaths: [data.certificate.templateUrl]
+                        }
+                    );
+                    if ( certificateTemplateDownloadableUrl.success ) {
+                        data.certificate.templateUrl = certificateTemplateDownloadableUrl.data[0].url;
+                    } else {
+                        throw {
+                            message:  CONSTANTS.apiResponses.DOWNLOADABLE_URL_NOT_FOUND
+                        };
+                    }
+                }
+
+                let certificateTemplateDetails =[];
+                if ( data.certificate.templateId && data.certificate.templateId !== "" ) {
+                    certificateTemplateDetails = await certificateTemplateQueries.certificateTemplateDocument({
+                        _id : data.certificate.templateId
+                    },["issuer","solutionId","programId"]);
+
+                    //certificate template data do not exists.
+                    if ( !certificateTemplateDetails.length > 0 ) {
+                        throw {
+                            message:  CONSTANTS.apiResponses.CERTIFICATE_TEMPLATE_NOT_FOUND
+                        };
+                    }
+                    certificateTemplateDetails[0].issuer.kid = CERTIFICATE_ISSUER_KID;
+                }
+                
+                //create certificate request body 
+                let certificateData = {
+                    recipient : {
+                        id : data.userId,
+                        name : `${data.userProfile.firstName} ${data.userProfile.lastName}`,
+                        type : data.userProfile.profileUserType.type
+                    },
+                    templateUrl : data.certificate.templateUrl,
+                    issuer : certificateTemplateDetails[0].issuer,
+                    status : data.certificate.status.toUpperCase(),
+                    projectId : (data._id).toString(),
+                    projectName : data.title,
+                    programId : (certificateTemplateDetails[0].programId).toString(),
+                    programName : ( data.programInformation && data.programInformation.name ) ? data.programInformation.name : "",
+                    solutionId : (certificateTemplateDetails[0].solutionId).toString(),
+                    solutionName : ( data.solutionInformation && data.solutionInformation.name ) ? data.solutionInformation.name :  "",
+                    completedDate : data.completedDate
+                };
+                return resolve(certificateData);
+
+            } catch (error) {
+                console.log("error:",error.message)
+                return resolve({
+                    success: false,
+                    message: error.message
+
+                });
+            }
+        })
+    }    
+
+    /**
+     * call sunbird-RC for certificate creation.
+     * @method
+     * @name createCertificate 
+     * @param {Object} certificateData - payload for certificate creation data.
+     * @param {string} projectId - project Id.
+     * @returns {Boolean} certificate creation status.
+    */
+
+    static createCertificate(certificateData, projectId) {
+        return new Promise(async (resolve, reject) => {
+            try {
+
+                const certificateDetails = await certificateService.createCertificate( certificateData );    
+                
+                if ( !certificateDetails.success || !certificateDetails.data || !certificateDetails.data.ProjectCertificate ) {
+                    throw {
+                        message:  CONSTANTS.apiResponses.CERTIFICATE_GENERATION_FAILED
+                    };
+                }
+                
+                let updateObject = {
+                    "$set" : {}
+                };
+
+                //  if transaction id is present.
+                if ( certificateDetails.data.ProjectCertificate.transactionId &&
+                    certificateDetails.data.ProjectCertificate.transactionId !== "" 
+                ) {
+                    let transactionIdvalue = certificateDetails.data.ProjectCertificate.transactionId;
+                    const first2 = transactionIdvalue.slice(0, 2);
+                    
+                    if ( first2 === "1-" ) {
+                        transactionIdvalue = transactionIdvalue.split(/1-(.*)/s)
+                        updateObject["$set"]["certificate.transactionId"] = transactionIdvalue[1];
+                    } else {
+                        updateObject["$set"]["certificate.transactionId"] = transactionIdvalue;
+                    }
+                        
+                }
+
+                // update project details certificate details
+                if ( certificateDetails.data.ProjectCertificate.osid &&
+                    certificateDetails.data.ProjectCertificate.osid !== "" 
+                ) {
+                    updateObject["$set"]["certificate.osid"] = certificateDetails.data.ProjectCertificate.osid;
+                    updateObject["$set"]["certificate.issuedOn"] = new Date();
+                }
+                updateObject["$set"]["certificate.transactionIdCreatedAt"] = new Date();;
+               
+                if ( Object.keys(updateObject["$set"]).length > 0 ) {
+                    let updatedProject = await projectQueries.findOneAndUpdate(
+                        {
+                            _id: projectId
+                        },
+                        updateObject
+                    );
+                } 
+                return resolve( { 
+                    success: true
+                });
+            } catch (error) {
+                return resolve({
+                    success: false,
+                    message: error.message
+
+                });
+            }
+        })
+    }
+
+    /**
+     * certificate callback
+     * @method
+     * @name certificateCallback 
+     * @param {String} transactionId - transactionId for create certificate.
+     * @param {String} osid - osid for created certificate.
+     * @returns {JSON} certificate data updation details.
+    */
+
+    static certificateCallback(transactionId, osid) {
+        return new Promise(async (resolve, reject) => {
+            try {
+                // adding comments to check call back is called properly or not
+                console.log("<==================callback called====================>",transactionId,osid)
+                console.log("transactionId :",transactionId)
+                console.log("osid :",osid)
+                console.log("<==================callback called====================>")
+                // callback request structure nested so validating transactionId and osid here instead in validator.
+                if ( transactionId == "" || osid == "" ) {
+                    throw {
+                        status: HTTP_STATUS_CODE["bad_request"].status,
+                        message: CONSTANTS.apiResponses.TRANSACTION_ID_AND_OSID_REQUIRED
+                    }
+                }
+                let updateObject = {
+                    "$set" : {}
+                };
+
+                // update osid and eligibility based on transactionId
+                updateObject["$set"]["certificate.osid"] = osid;
+                updateObject["$set"]["certificate.message"] = CONSTANTS.common.PROJECT_CERTIFICATE_GENERATED_SUCCESSFULLY;
+                updateObject["$set"]["certificate.issuedOn"] = new Date();
+
+                let projectDetails = await projectQueries.findOneAndUpdate(
+                    {
+                        "certificate.transactionId" : transactionId
+                    },
+                    updateObject
+                );
+
+                if ( projectDetails == null || !Object.keys(projectDetails).length > 0 ) {
+                    throw {
+                        status: HTTP_STATUS_CODE["bad_request"].status,
+                        message: CONSTANTS.apiResponses.PROJECT_NOT_FOUND
+                    }
+                }
+                await kafkaProducersHelper.pushProjectToKafka(projectDetails);
+                return resolve({ 
+                    success: true,
+                    message: CONSTANTS.apiResponses.PROJECT_CERTIFICATE_GENERATED,
+                    data : {
+                        _id : ObjectId(projectDetails._id)
+                    }
+
+                });
+
+            } catch (error) {
+                return resolve({
+                    success: false,
+                    message: error.message,
+                    data: {}
+                });
+            }
+        })
+    }
+
+    /**
+     * List user project details with certificate
+     * @method
+     * @name certificates 
+     * @param {String} userId - userId.
+     * @returns {JSON} certificate data updation details.
+    */
+
+    static certificates(userId) {
+        return new Promise(async (resolve, reject) => {
+            try {
+                
+                //  get project details of user which have certificate.
+                const userProject = await projectQueries.projectDocument({
+                    userId: userId,
+                    status: CONSTANTS.common.SUBMITTED_STATUS,
+                    certificate: {$exists:true}
+                }, [
+                    "_id",
+                    "title",
+                    "status",
+                    "certificate.osid",
+                    "certificate.transactioId",
+                    "certificate.templateUrl",
+                    "certificate.status",
+                    "certificate.eligible",
+                    "certificate.message",
+                    "certificate.issuedOn",
+                    "completedDate"
+                ]);
+                
+                if ( !userProject.length > 0 ) {
+                    throw {
+                        status: HTTP_STATUS_CODE["bad_request"].status,
+                        message: CONSTANTS.apiResponses.PROJECT_WITH_CERTIFICATE_NOT_FOUND
+                    }
+                }
+                let templateFilePath = [];
+                //loop through user projects and get downloadable url for templateUrl if osid is present.
+                for( let userProjectPointer = 0; userProjectPointer < userProject.length; userProjectPointer++ ) {
+                    if ( userProject[userProjectPointer].certificate.osid &&
+                        userProject[userProjectPointer].certificate.osid !== "" && 
+                        userProject[userProjectPointer].certificate.templateUrl &&
+                        userProject[userProjectPointer].certificate.templateUrl !== ""
+                        ) {
+                            templateFilePath.push(userProject[userProjectPointer].certificate.templateUrl);
+                        }
+                }
+                
+                if( templateFilePath.length > 0 ) {
+
+                    let certificateTemplateDownloadableUrl = 
+                        await coreService.getDownloadableUrl(
+                            {
+                                filePaths: templateFilePath
+                            }
+                    );
+                    if ( !certificateTemplateDownloadableUrl.success ) {
+                        throw {
+                            message:  CONSTANTS.apiResponses.DOWNLOADABLE_URL_NOT_FOUND
+                        };
+                    }
+                    // map downloadable templateUrl to corresponding project data
+                    userProject.forEach(projectData => {
+                            var itemFromUrlArray = certificateTemplateDownloadableUrl.data.find(item=> item.filePath == projectData.certificate.templateUrl);
+                            if (itemFromUrlArray) {
+                                projectData.certificate.templateUrl = itemFromUrlArray.url;
+                            }
+                        }
+                    )
+                }
+
+                let count = _.countBy(userProject, (rec) => {
+                    return (rec.certificate && rec.certificate.osid && rec.certificate.osid !== "" )? 'generated': 'notGenerated';
+                });
+                
+                return resolve({ 
+                    success: true,
+                    message: CONSTANTS.apiResponses.PROJECTS_FETCHED,
+                    data : {
+                        data : userProject,
+                        count : userProject.length,
+                        certificateCount : count.generated
+                    }
+
+                });
+            } catch (error) {
+                return resolve({
+                    success: false,
+                    message: error.message,
+                    data: {}
+                });
+            }
+        })
+    }
+
+    /**
+     * Re-Issue project certificate
+     * @method
+     * @name certificateReIssue 
+     * @param {String} projectId - projectId.
+     * @returns {JSON} certificate re-issued details.
+    */
+
+     static certificateReIssue(projectId) {
+        return new Promise(async (resolve, reject) => {
+            try {
+                //  get project details project for which certificate re-issue required .
+                const userProject = await projectQueries.projectDocument({
+                    _id: projectId,
+                    status: CONSTANTS.common.SUBMITTED_STATUS,
+                    certificate: {$exists:true}  
+                });
+
+                //  if project details not found.
+                if (!userProject.length > 0) {
+                    throw {
+                        status: HTTP_STATUS_CODE['bad_request'].status,
+                        message: CONSTANTS.apiResponses.USER_PROJECT_NOT_FOUND
+                    };
+                }
+                let updateObject = {
+                    "$set" : {}
+                };
+                
+                //  fetch user data using userId of project and calling the profile API
+                let userProfileData = await userProfileService.profileReadPrivate(userProject[0].userId);
+                if ( userProfileData.success && 
+                     userProfileData.data &&
+                     userProfileData.data.response &&
+                     userProfileData.data.response.firstName &&
+                     userProfileData.data.response.firstName !== ""
+                ) {
+                    userProject[0].userProfile.firstName = userProfileData.data.response.firstName;
+                    userProject[0].userProfile.lastName = userProfileData.data.response.lastName;
+                } else {
+                    throw {
+                        status: HTTP_STATUS_CODE['bad_request'].status,
+                        message: CONSTANTS.apiResponses.USER_PROFILE_NOT_FOUND
+                    };
+                }
+
+                // create payload for certificate generation
+                const certificateData = await this.createCertificatePayload(userProject[0]);
+
+                // call sunbird-RC to create certificate for project
+                const certificate = await this.createCertificate(certificateData, userProject[0]._id);
+
+                if ( !certificate.success ) {
+                    throw {
+                        message:  CONSTANTS.apiResponses.CERTIFICATE_GENERATION_FAILED
+                    };
+                }
+
+                if ( userProject[0].certificate.transactionId ) {
+                    updateObject["$set"]["certificate.originalTransactionInformation.transactionId"] = userProject[0].certificate.transactionId
+                }
+                if ( userProject[0].certificate.osid ) {
+                    updateObject["$set"]["certificate.originalTransactionInformation.osid"] = userProject[0].certificate.osid;
+                }
+
+                if (userProject[0].userProfile.firstName ) {
+                    updateObject["$set"]["userProfile.firstName"] = userProject[0].userProfile.firstName;
+                }
+
+                if (userProject[0].userProfile.lastName ) {
+                    updateObject["$set"]["userProfile.lastName"] = userProject[0].userProfile.lastName;
+                }
+
+                updateObject["$set"]["certificate.reIssuedAt"] = new Date();
+                await projectQueries.findOneAndUpdate(
+                    {
+                        _id: userProject[0]._id
+                    },
+                    updateObject
+                );
+                
+                return resolve({ 
+                    success: true,
+                    message: CONSTANTS.apiResponses.PROJECT_SUBMITTED_FOR_REISSUE,
+                    data : {
+                        _id :  userProject[0]._id
+                    }
+
+                });
+            } catch (error) {
+                return resolve({
+                    success: false,
+                    message: error.message,
+                    data: {}
+                });
+            }
+        })
+    }
+
+
 };
 
 /**
@@ -2096,7 +3287,7 @@ function _projectInformation(project) {
 
     return new Promise(async (resolve, reject) => {
         try {
-
+            
             if (project.entityInformation) {
                 project.entityId = project.entityInformation._id;
                 project.entityName = project.entityInformation.name;
@@ -2106,7 +3297,7 @@ function _projectInformation(project) {
                 project.programId = project.programInformation._id;
                 project.programName = project.programInformation.name;
             }
-
+            
             //project attachments
             if ( project.attachments && project.attachments.length > 0 ) {
                 
@@ -2126,14 +3317,14 @@ function _projectInformation(project) {
                         projectAttachments.push(currentProjectAttachment.sourcePath);
                     }
                 }
-
+                
                 let projectAttachmentsUrl = await _attachmentInformation(projectAttachments, projectLinkAttachments, project.attachments, CONSTANTS.common.PROJECT_ATTACHMENT);
                 if ( projectAttachmentsUrl.data && projectAttachmentsUrl.data.length > 0 ) {
                     project.attachments = projectAttachmentsUrl.data;
                 }
                
             }
-
+            
             //task attachments
             if (project.tasks && project.tasks.length > 0) {
                 //order task based on task sequence
@@ -2180,7 +3371,7 @@ function _projectInformation(project) {
                     project.tasks = taskAttachmentsUrl.data;
                 }
             }
-
+            
             project.status =
                 project.status ? project.status : CONSTANTS.common.NOT_STARTED_STATUS;
 
@@ -2288,6 +3479,7 @@ function _attachmentInformation ( attachmentWithSourcePath = [], linkAttachments
 
                 if (type === CONSTANTS.common.PROJECT_ATTACHMENT ) {
                     attachments.concat(linkAttachments);
+                    
 
                 } else {
 
@@ -2335,7 +3527,7 @@ function _attachmentInformation ( attachmentWithSourcePath = [], linkAttachments
 function _projectTask(tasks, isImportedFromLibrary = false, parentTaskId = "") {
 
     tasks.forEach(singleTask => {
-
+        
         singleTask.externalId = singleTask.externalId ? singleTask.externalId : singleTask.name.toLowerCase();
         singleTask.type = singleTask.type ? singleTask.type : CONSTANTS.common.SIMPLE_TASK_TYPE;
         singleTask.status = singleTask.status ? singleTask.status : CONSTANTS.common.NOT_STARTED_STATUS;
@@ -2344,7 +3536,9 @@ function _projectTask(tasks, isImportedFromLibrary = false, parentTaskId = "") {
         if (!singleTask.hasOwnProperty("isDeletable")) {
             singleTask.isDeletable = true;
         }
-
+        if ( UTILS.isValidMongoId(singleTask._id.toString()) ) {
+            singleTask.referenceId = singleTask._id.toString();
+        }
         singleTask.createdAt = singleTask.createdAt ? singleTask.createdAt : new Date();
         singleTask.updatedAt = new Date();
         singleTask._id = UTILS.isValidMongoId(singleTask._id.toString()) ? uuidv4() : singleTask._id;
@@ -2383,7 +3577,7 @@ function _projectTask(tasks, isImportedFromLibrary = false, parentTaskId = "") {
         }
 
     })
-
+    
     return tasks;
 }
 
@@ -2482,27 +3676,48 @@ function _projectCategories(categories) {
 function _entitiesInformation(entityIds) {
     return new Promise(async (resolve, reject) => {
         try {
+            let locationIds = [];
+            let locationCodes = [];
+            let entityInformations = [];
+            entityIds.forEach(entity=>{
+                if (UTILS.checkValidUUID(entity)) {
+                  locationIds.push(entity);
+                } else {
+                    locationCodes.push(entity);
+                }
+            });
 
-            let entityData =
-                await coreService.entityDocuments(
-                    entityIds,
-                    ["metaInformation", "entityType", "entityTypeId", "registryDetails"]
-                );
+            if ( locationIds.length > 0 ) {
+                let bodyData = {
+                    "id" : locationIds
+                } 
+                let entityData = await userProfileService.locationSearch( bodyData, formatResult = true);
+                if ( entityData.success ) {
+                    entityInformations =  entityData.data;
+                }
+            }
 
-            if (!entityData.success) {
+            if ( locationCodes.length > 0 ) {
+                let bodyData = {
+                    "code" : locationCodes
+                } 
+                let entityData = await userProfileService.locationSearch( bodyData , formatResult = true );
+                if ( entityData.success ) {
+                    entityInformations =  entityInformations.concat(entityData.data);
+                }
+            }
+           
+            if ( !entityInformations.length > 0 ) {
                 throw {
                     status: HTTP_STATUS_CODE['bad_request'].status,
                     message: CONSTANTS.apiResponses.ENTITY_NOT_FOUND
                 }
             }
-
             let entitiesData = [];
-
-            if (entityData.success && entityData.data.length > 0) {
-
-                entitiesData = _entitiesMetaInformation(entityData.data);
+            if ( entityInformations.length > 0 ) {
+                entitiesData = await _entitiesMetaInformation(entityInformations);
             }
-
+            
             return resolve({
                 success: true,
                 data: entitiesData
@@ -2698,23 +3913,6 @@ function _observationDetails(observationData, userRoleAndProfileInformation = {}
 
             } else {
 
-                let solutionUpdated =
-                    await surveyService.updateSolution(
-                        observationData.token,
-                        {
-                            project: observationData.project,
-                            referenceFrom: "project"
-                        },
-                        observationData.solutionDetails.externalId
-                    );
-
-                if (!solutionUpdated.success) {
-                    throw {
-                        status: HTTP_STATUS_CODE['bad_request'].status,
-                        message: CONSTANTS.apiResponses.SOLUTION_NOT_UPDATED
-                    }
-                }
-
                 let startDate = new Date();
                 let endDate = new Date();
                 endDate.setFullYear(endDate.getFullYear() + 1);
@@ -2769,16 +3967,19 @@ function _observationDetails(observationData, userRoleAndProfileInformation = {}
 */
 
 function _entitiesMetaInformation(entitiesData) {
+    return new Promise(async (resolve, reject) => {
+        let entityInformation = []
+        for ( let index = 0; index < entitiesData.length; index++ ) {
+            let entityHierarchy =  await userProfileService.getParentEntities( entitiesData[index]._id );
+            entitiesData[index].metaInformation.hierarchy = entityHierarchy;
+            entitiesData[index].metaInformation._id = entitiesData[index]._id;
+            entitiesData[index].metaInformation.entityType = entitiesData[index].entityType;
+            entitiesData[index].metaInformation.registryDetails = entitiesData[index].registryDetails;
+            entityInformation.push(entitiesData[index].metaInformation)
+        }
 
-    entitiesData = entitiesData.map(entity => {
-        entity.metaInformation._id = ObjectId(entity._id);
-        entity.metaInformation.entityType = entity.entityType;
-        entity.metaInformation.entityTypeId = ObjectId(entity.entityTypeId);
-        entity.metaInformation.registryDetails = entity.registryDetails;
-        return entity.metaInformation;
-    });
-
-    return entitiesData;
+        return resolve (entityInformation);
+    })
 }
 
 
@@ -2839,5 +4040,193 @@ function _projectData(data) {
     })
 }
 
+/**
+  * Validate & Update UserProfile in Projects.
+  * @method
+  * @name _updateUserProfileBasedOnUserRoleInfo 
+  * @param {Object} userProfile - userProfile data.
+  * @param {Object} userRoleInformation - userRoleInformation data.
+  * @returns {Object} updated UserProfile information.
+*/
+
+function _updateUserProfileBasedOnUserRoleInfo(userProfile, userRoleInformation) {
+    return new Promise(async (resolve, reject) => {
+        try {
 
 
+            let updateUserProfileRoleInformation = false;   // Flag to see if roleInformation i.e. userProfile.profileUserTypes has to be updated based on userRoleInfromation.roles
+
+            if(userRoleInformation.role) { // Check if userRoleInformation has role value.
+                let rolesInUserRoleInformation = userRoleInformation.role.split(","); // userRoleInfomration.role can be multiple with comma separated.
+
+                let resetCurrentUserProfileRoles = false; // Flag to reset current userProfile.profileUserTypes i.e. if current role in profile is not at all there in userRoleInformation.roles
+                // Check if userProfile.profileUserTypes exists and is an array of length > 0
+                if(userProfile.profileUserTypes && Array.isArray(userProfile.profileUserTypes) && userProfile.profileUserTypes.length >0) {
+
+                    // Loop through current roles in userProfile.profileUserTypes
+                    for (let pointerToCurrentProfileUserTypes = 0; pointerToCurrentProfileUserTypes < userProfile.profileUserTypes.length; pointerToCurrentProfileUserTypes++) {
+                        const currentProfileUserType = userProfile.profileUserTypes[pointerToCurrentProfileUserTypes];
+
+                        if(currentProfileUserType.subType && currentProfileUserType.subType !== null) { // If the role has a subType
+
+                            // Check if subType exists in userRoleInformation role, if not means profile data is old and should be reset.
+                            if(!userRoleInformation.role.toUpperCase().includes(currentProfileUserType.subType.toUpperCase())) {
+                                resetCurrentUserProfileRoles = true; // Reset userProfile.profileUserTypes
+                                break;
+                            }
+                        } else { // If the role subType is null or is not there
+
+                            // Check if type exists in userRoleInformation role, if not means profile data is old and should be reset.
+                            if(!userRoleInformation.role.toUpperCase().includes(currentProfileUserType.type.toUpperCase())) {
+                                resetCurrentUserProfileRoles = true; // Reset userProfile.profileUserTypes
+                                break;
+                            }
+                        }
+                    }
+                }
+                if(resetCurrentUserProfileRoles) { // Reset userProfile.profileUserTypes
+                    userProfile.profileUserTypes = new Array;
+                }
+
+                // Loop through each subRole in userRoleInformation
+                for (let pointerToRolesInUserInformation = 0; pointerToRolesInUserInformation < rolesInUserRoleInformation.length; pointerToRolesInUserInformation++) {
+                    const subRole = rolesInUserRoleInformation[pointerToRolesInUserInformation];
+                    // Check if userProfile.profileUserTypes exists and is an array of length > 0
+                    if(userProfile.profileUserTypes && Array.isArray(userProfile.profileUserTypes) && userProfile.profileUserTypes.length >0) {
+                        if(!_.find(userProfile.profileUserTypes, { 'type': subRole.toLowerCase() }) && !_.find(userProfile.profileUserTypes, { 'subType': subRole.toLowerCase() })) { 
+                            updateUserProfileRoleInformation = true; // Need to update userProfile.profileUserTypes
+                            if(subRole.toUpperCase() === "TEACHER") { // If subRole is not teacher
+                                userProfile.profileUserTypes.push({
+                                    "subType" : null,
+                                    "type" : "teacher"
+                                })
+                            } else { // If subRole is not teacher
+                                userProfile.profileUserTypes.push({
+                                    "subType" : subRole.toLowerCase(),
+                                    "type" : "administrator"
+                                })
+                            }
+                        }
+                    } else { // Make a new entry if userProfile.profileUserTypes is empty or does not exist.
+                        updateUserProfileRoleInformation = true; // Need to update userProfile.profileUserTypes
+                        userProfile.profileUserTypes = new Array;
+                        if(subRole.toUpperCase() === "TEACHER") { // If subRole is teacher
+                            userProfile.profileUserTypes.push({
+                                "subType" : null,
+                                "type" : "teacher"
+                            })
+                        } else { // If subRole is not teacher
+                            userProfile.profileUserTypes.push({
+                                "subType" : subRole.toLowerCase(),
+                                "type" : "administrator"
+                            })
+                        }
+                    }
+                }
+            }
+
+            if(updateUserProfileRoleInformation) { // If profileUserTypes in userProfile was wrong and is updated as per userRoleInformation
+                userProfile.userRoleMismatchFoundAndUpdated = true;
+            }
+
+            // Create location only object from userRoleInformation
+            let userRoleInformationLocationObject = _.omit(userRoleInformation, ['role']);
+            
+            // All location keys from userRoleInformation
+            let userRoleInfomrationLocationKeys = Object.keys(userRoleInformationLocationObject);
+
+            let updateUserProfileLocationInformation = false;   // Flag to see if userLocations i.e. userProfile.userLocations has to be updated based on userRoleInfromation location values
+
+            // Loop through all location keys.
+            for (let pointerToUserRoleInfromationLocationKeys = 0; pointerToUserRoleInfromationLocationKeys < userRoleInfomrationLocationKeys.length; pointerToUserRoleInfromationLocationKeys++) {
+                
+                const locationType = userRoleInfomrationLocationKeys[pointerToUserRoleInfromationLocationKeys]; // e.g. state, district, school
+                const locationValue = userRoleInformationLocationObject[locationType]; // Location UUID values or school code.
+                
+                // Check if userProfile.userLocations exists and is an array of length > 0
+                if(userProfile.userLocations && Array.isArray(userProfile.userLocations) && userProfile.userLocations.length >0) {
+
+                    if(locationType === "school") { // If location type school exist check if same is there in userProfile.userLocations
+                        if(!_.find(userProfile.userLocations, { 'type': "school", 'code': locationValue })) {
+                            updateUserProfileLocationInformation = true; // School does not exist in userProfile.userLocations, update entire userProfile.userLocations
+                            break;
+                        }
+                    } else { // Check if location type is there in userProfile.userLocations and has same value as userRoleInformation
+                        if(!_.find(userProfile.userLocations, { 'type': locationType, 'id': locationValue })) {
+                            updateUserProfileLocationInformation = true; // Location does not exist in userProfile.userLocations, update entire userProfile.userLocations
+                            break;
+                        }
+                    }
+                } else {
+                    updateUserProfileLocationInformation = true;
+                    break;
+                }
+            }
+
+            if(userProfile.userLocations && Array.isArray(userProfile.userLocations) && userProfile.userLocations.length >0) {
+                if(userProfile.userLocations.length != userRoleInfomrationLocationKeys.length) {
+                    updateUserProfileLocationInformation = true;
+                }
+            }
+
+            // If userProfile.userLocations has to be updated, get all values and set in userProfile.
+            if(updateUserProfileLocationInformation) {
+
+                //update userLocations in userProfile
+                let locationIds = [];
+                let locationCodes = [];
+                let userLocations = new Array;
+
+                userRoleInfomrationLocationKeys.forEach( requestedDataKey => {
+                    if (UTILS.checkValidUUID(userRoleInformationLocationObject[requestedDataKey])) {
+                        locationIds.push(userRoleInformationLocationObject[requestedDataKey]);
+                    } else {
+                        locationCodes.push(userRoleInformationLocationObject[requestedDataKey]);
+                    }
+                })
+
+                //query for fetch location using id
+                if ( locationIds.length > 0 ) {
+                    let locationQuery = {
+                        "id" : locationIds
+                    }
+
+                    let entityData = await userProfileService.locationSearch(locationQuery);
+                    if ( entityData.success ) {
+                        userLocations = entityData.data;
+                    }
+                }
+
+                // query for fetch location using code
+                if ( locationCodes.length > 0 ) {
+                    let codeQuery = {
+                        "code" : locationCodes
+                    }
+
+                    let entityData = await userProfileService.locationSearch(codeQuery);
+                    if ( entityData.success ) {
+                        userLocations =  userLocations.concat(entityData.data);
+                    }
+                }
+
+                if ( userLocations.length > 0 ) {
+                    userProfile["userLocations"] = userLocations;
+                    userProfile.userLocationsMismatchFoundAndUpdated = true; // If userLocations in userProfile was wrong and is updated as per userRoleInformation
+                }
+            }
+
+            return resolve({
+                success: true,
+                profileMismatchFound : (updateUserProfileLocationInformation || updateUserProfileRoleInformation) ? true : false,
+                data: userProfile
+            });
+
+        } catch (error) {
+            return resolve({
+                status: error.status || HTTP_STATUS_CODE['internal_server_error'].status,
+                message: error.message || HTTP_STATUS_CODE['internal_server_error'].message,
+                data : false
+            });
+        }
+    })
+}

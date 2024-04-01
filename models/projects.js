@@ -8,8 +8,14 @@
 module.exports = {
     name: "projects",
     schema: {
-        title : String,
-        description : String,
+        title : {
+            type : String,
+            index: true
+        },
+        description : {
+            type : String,
+            index: true
+        },
         taskReport : {
             type : Object,
             default : {}
@@ -46,7 +52,8 @@ module.exports = {
         },
         createdBy : {
             type : String,
-            default : "SYSTEM"
+            default : "SYSTEM",
+            index: true
         },
         tasks : {
             type : Array,
@@ -83,7 +90,7 @@ module.exports = {
             default : []
         },
         entityId : {
-            type : "ObjectId",
+            type : String,
             index : true
         },
         programId : {
@@ -134,6 +141,43 @@ module.exports = {
             type : Array,
             default : [] 
         },
-        remarks : String
-    }
+        remarks : String,
+        userProfile : Object,
+        certificate : {
+            templateId : "ObjectId",
+            osid : {
+                type : String,
+                index : true,
+                unique : true
+            },
+            transactionId : {
+                type : String,
+                index : true,
+                unique : true
+            },
+            templateUrl : String,
+            status : String,
+            eligible : Boolean,
+            message : String,
+            issuedOn : Date,
+            criteria : Object,
+            reIssuedAt : Date,
+            transactionIdCreatedAt : Date,
+            originalTransactionInformation :{
+                transactionId : String,
+                osid : String
+            }
+            
+        }
+    },
+    compoundIndex: [
+        {
+            "name" :{ userId: 1, solutionId: 1 },
+            "indexType" : { unique: true, partialFilterExpression: { solutionId: { $exists: true }}}
+        }
+    ]
+        
+    
+
 };
+

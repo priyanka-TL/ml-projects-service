@@ -319,7 +319,7 @@ const observationDetails = function (token,observationId) {
             let url =  
             ASSESSMENT_URL + 
             CONSTANTS.endpoints.OBSERVATION_DETAILS + "/" + observationId;
-
+            
             const options = {
                 headers : {
                     "content-type": "application/json",
@@ -340,7 +340,7 @@ const observationDetails = function (token,observationId) {
                     result.success = false;
                 } else {
 
-                    let response = data.body;
+                    let response = JSON.parse(data.body);
                     if( response.status === HTTP_STATUS_CODE['ok'].status ) {
                         result["data"] = response.result;
                     } else {
@@ -348,6 +348,7 @@ const observationDetails = function (token,observationId) {
                     }
                     
                 }
+
                 return resolve(result);
             }
 
@@ -388,7 +389,7 @@ const listSolutions = function (solutionIds) {
                 let result = {
                     success : true
                 };
-                
+
                 if (err) {
                     result.success = false;
                 } else {
@@ -726,7 +727,8 @@ const listEntitiesByLocationIds = function ( token,locationIds ) {
                     
                     let response = data.body;
                     
-                    if( response.status === HTTP_STATUS_CODE['ok'].status ) {
+                    
+                    if( response.status === HTTP_STATUS_CODE['ok'].status && response.result ) {
                         result["data"] = response.result;
                     } else {
                         result.success = false;

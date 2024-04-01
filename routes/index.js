@@ -89,7 +89,7 @@ module.exports = function (app) {
         }
 
           console.log('-------------------Response log starts here-------------------');
-          console.log(result);
+          console.log(JSON.stringify(result));
           console.log('-------------------Response log ends here-------------------');
       }
       catch (error) {

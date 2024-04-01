@@ -76,6 +76,7 @@ module.exports = function () {
       global.schemas[name] = require(PROJECT_ROOT_DIRECTORY + '/models/' + file);
     }
   });
+  
 
   // All controllers
   global.controllers = requireAll({

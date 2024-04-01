@@ -680,7 +680,8 @@ module.exports = class ProjectTemplates extends Abstract {
                 await projectTemplatesHelper.details(
                     req.params._id ? req.params._id : "",
                     req.query.link ? req.query.link : "",
-                    req.userDetails && req.userDetails.userInformation && req.userDetails.userInformation.userId ? req.userDetails.userInformation.userId : ""
+                    req.userDetails && req.userDetails.userInformation && req.userDetails.userInformation.userId ? req.userDetails.userInformation.userId : "",
+                    req.query.isAPrivateProgram ? req.query.isAPrivateProgram : ""
                 );
 
                 projectTemplatesDetails.result = projectTemplatesDetails.data;

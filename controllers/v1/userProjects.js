@@ -126,7 +126,6 @@ module.exports = class UserProjects extends Abstract {
     async sync(req) {
         return new Promise(async (resolve, reject) => {
             try {
-
                 let createdProject = await userProjectsHelper.sync(
                     req.params._id,
                     req.query.lastDownloadedAt,
@@ -647,7 +646,6 @@ module.exports = class UserProjects extends Abstract {
                     req.userDetails.userToken,
                     req.headers['x-app-ver']
                 );
-
                 return resolve({
                     message: report.message,
                     result: report.data
@@ -955,6 +953,176 @@ module.exports = class UserProjects extends Abstract {
                     errorObject: error
                 });
             }
+        })
+    }
+
+    /**
+    * @api {post} /improvement-project/api/v1/userProjects/certificateCallback
+    * Project certificate callback
+    * @apiVersion 1.0.0
+    * @apiGroup User Projects
+    * @apiSampleRequest /improvement-project/api/v1/userProjects/certificateCallback
+    * @apiParamExample {json} Request
+    *   {
+            "event": "sunbird-rc-create",
+            "timestamp": 1660145509358,
+            "data": {
+                "userId": "anonymous",
+                "entityType": "ProjectCertificate",
+                "osid": "ce2244a4-1a17-49a0-a3f9-c151161e70bl",
+                "transactionId": "1-3a4892d8-2221-4e96-9434-f4b37886126b",
+                "status": "SUCCESSFUL",
+                "message": ""
+            },
+            "webhookUrl": "http://ml-project-service:3000/v1/userProjects/certificateCallback"
+        }
+    * @apiParamExample {json} Response:
+    /**{
+            "message": "Successfully generated project certificate",
+            "status": 200,
+            "result": {
+                "_id": "63446059eeffea2b819f036e"
+            }
+        }
+    /**
+
+    /**
+     * Project certificate callback.
+     * @method
+     * @name certificateCallback
+     * @param {Object} req - request data.
+     * @returns {JSON} certificate details.
+    */
+
+    async certificateCallback(req) {
+    return new Promise(async (resolve, reject) => {
+            try {
+                //console request body to check if callback is coming or not and to check any structural change is there or not 
+                console.log("-------------callback request body------------",JSON.stringify(req.body))
+                let certificateDetails = await userProjectsHelper.certificateCallback( req.body.data.transactionId, req.body.data.osid );
+                    return resolve({
+                        message: certificateDetails.message,
+                        result: certificateDetails.data
+                    });
+            } catch (error) {
+                return reject({
+                    status: error.status || HTTP_STATUS_CODE.internal_server_error.status,
+                    message: error.message || HTTP_STATUS_CODE.internal_server_error.message,
+                    errorObject: error
+                });
+            }
+        })
+    }
+
+    /**
+    * @api {get} /improvement-project/api/v1/userProjects/certificates
+    * List of user project with certificate
+    * @apiVersion 1.0.0
+    * @apiGroup User Projects
+    * @apiSampleRequest /improvement-project/api/v1/userProjects/certificates
+    * @apiParamExample {json} Response:
+    *   {
+            "message": "User project fetched successfully",
+            "status": 200,
+            "result": {
+                "data": [{
+                        "_id": "60793b80bd49095a19ddeae1",
+                        "title": "Project with learning resources",
+                        "certificate": {
+                            "osid": "1-21c8ecab-7b8d-40f1-9961-cae7fcb6a5f9",
+                            "status": "active",
+                            "templateId": "600acc42c7de076e6f995147",
+                            "templateUrl": "certificateTemplates/6343bd978f9d8980b7841e85/ba9aa220-ff1b-4717-b6ea-ace55f04fc16_2022-9-10-1665383945769.svg",
+                            "issuedOn": "2020-12-03 13:22:31.988Z"
+                        },
+                        "status": "submitted"
+                    },
+                    {
+                        "_id": "6011136a2d25b926974d9ec9",
+                        "title": "Keep Our Schools Alive! (Petition)",
+                        "status": "submitted",
+                        "certificate": {
+                            "eligible": false,
+                            "templateId": "600acc42c7de076e6f995147",
+                            "message": "Not submitted the project the project within program end date"
+                        }
+                    }
+                ],
+                "count": 2,
+                "certificateCount": 1
+            }
+        }
+    /**
+
+    /**
+     * List user project details with certificate
+     * @method
+     * @name certificates
+     * @returns {JSON} User project detaills with certificate
+    */
+
+    async certificates(req) {
+        return new Promise(async (resolve, reject) => {
+                try {
+                    // fetch projects data of user, whish has certificate on completion
+                    let projectDetails = await userProjectsHelper.certificates( req.userDetails.userInformation.userId );
+                    return resolve({
+                        message: projectDetails.message,
+                        result: projectDetails.data
+                    });
+                    
+                } catch (error) {
+                    return reject({
+                        status: error.status || HTTP_STATUS_CODE.internal_server_error.status,
+                        message: error.message || HTTP_STATUS_CODE.internal_server_error.message,
+                        errorObject: error
+                    });
+                }
+        })
+    }
+
+    /**
+    * @api {post} /improvement-project/api/v1/userProjects/certificateReIssue
+    * ReIssue project certificate (admin api)
+    * @apiVersion 1.0.0
+    * @apiGroup User Projects
+    * @apiSampleRequest /improvement-project/api/v1/userProjects/certificateReIssue
+    * @apiParamExample {json} Response:
+    /**{
+            "message": "Successfully generated project certificate",
+            "status": 200,
+            "result": {
+                "_id": "63446059eeffea2b819f036e"
+            }
+        }
+    /**
+     * ReIssue project certificate
+     * @method
+     * @name certificateReIssue
+     * @returns {JSON} Reissued details
+    */
+
+     async certificateReIssue(req) {
+        return new Promise(async (resolve, reject) => {
+                try {
+                    // ReIssue certificate of given project : projectId is passed as param 
+                    // This console has to be removed- adding to check the Issuer kid value in case rancher doesn't display console while deployment
+                    console.log("+++++CERTIFICATE_ISSUER_KID+++++ : ",CERTIFICATE_ISSUER_KID)
+                    let projectDetails = await userProjectsHelper.certificateReIssue(
+                        req.params._id,
+                    );
+                    return resolve({
+                        message: projectDetails.message,
+                        result: projectDetails.data
+                    });
+                    
+                } catch (error) {
+                    return reject({
+                        status: error.status || HTTP_STATUS_CODE.internal_server_error.status,
+                        message: error.message || HTTP_STATUS_CODE.internal_server_error.message,
+                        errorObject: error
+                    });
+                }
         })
     }
 

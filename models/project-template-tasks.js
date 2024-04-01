@@ -25,7 +25,8 @@ module.exports = {
         },
         isDeleted : {
             type : Boolean,
-            default : false
+            default : false,
+            index: true
         },
         externalId : {
             type : String,

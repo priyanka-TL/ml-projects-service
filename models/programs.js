@@ -23,14 +23,12 @@ module.exports = {
       concepts: ["json"],
       imageCompression: {},
       components: ["json"],
-      components: ["json"],
       isAPrivateProgram : {
         default : false,
         type : Boolean
       },
       scope : {
         entityType : String,
-        entityTypeId : "ObjectId",
         entities : {
           type : Array,
           index : true
@@ -47,6 +45,13 @@ module.exports = {
         default : false,
         type : Boolean,
         index : true
-      }
+      },
+      requestForPIIConsent: Boolean,
+      metaInformation: Object,
+      rootOrganisations : {
+        type : Array,
+        require : true
+      },
+      createdFor : Array
     }
   };
